@@ -138,19 +138,31 @@ def excel_viewer():
         valid_cols = set()
         for i, row in enumerate(all_rows, 1):
             for j in range(1, max_col+1):
-                # 有内容
                 if j <= len(row) and row[j-1] not in (None, ''):
                     valid_cols.add(j)
-                # 是合并单元格起始
                 if (i, j) in merge_map:
                     valid_cols.add(j)
         valid_cols = sorted(valid_cols)
-        # 生成HTML表格，只渲染有效列
+        # 统计有效行（有内容或为合并单元格起始的行）
+        valid_rows = set()
+        for i, row in enumerate(all_rows, 1):
+            row_has_content = False
+            for j in valid_cols:
+                if j <= len(row) and row[j-1] not in (None, ''):
+                    row_has_content = True
+                    break
+                if (i, j) in merge_map:
+                    row_has_content = True
+                    break
+            if row_has_content:
+                valid_rows.add(i)
+        # 生成HTML表格，只渲染有效行和有效列
         html = '<table>'
         for i, row in enumerate(all_rows, 1):
+            if i not in valid_rows:
+                continue
             html += '<tr>'
             col_idx = 1
-            logical_col = 0
             while col_idx <= max_col:
                 if col_idx not in valid_cols:
                     col_idx += 1

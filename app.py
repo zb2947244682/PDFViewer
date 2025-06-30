@@ -11,6 +11,8 @@ import logging
 import traceback
 import tempfile
 from playwright.sync_api import sync_playwright
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 # 日志配置
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -109,29 +111,78 @@ def excel_viewer():
             logger.error(f"Excel下载失败: {resp.status_code}")
             return Response('无效的参数', mimetype='text/plain')
         excel_bytes = io.BytesIO(resp.content)
-        xls = pd.ExcelFile(excel_bytes)
-        sheet_names = xls.sheet_names
+        wb = load_workbook(excel_bytes, data_only=True)
+        sheet_names = wb.sheetnames
         logger.info(f"Excel Sheet数量: {len(sheet_names)}")
         if sheet_index < 1 or sheet_index > len(sheet_names):
             logger.error(f"无效的SheetIndex: {sheet_index}")
             return Response('无效的参数', mimetype='text/plain')
-        # 读取整个sheet，无行列限制
-        df = pd.read_excel(xls, sheet_name=sheet_names[sheet_index-1])
-        logger.info(f"DataFrame shape: {df.shape}")
-        logger.info(f"DataFrame head:\n{df.head().to_string()}\nColumns: {df.columns.tolist()}")
-        if df.empty:
-            logger.error("Sheet内容为空")
-            return Response('无效的参数', mimetype='text/plain')
-        # DataFrame转HTML
-        html = df.to_html(index=False, border=1, justify='center')
-        # 包装完整HTML，设置样式
+        ws = wb[sheet_names[sheet_index-1]]
+        # 获取合并单元格信息
+        merged_ranges = ws.merged_cells.ranges
+        merge_map = {}  # {(row, col): (rowspan, colspan)}
+        skip_cells = set()
+        for mr in merged_ranges:
+            min_row, min_col, max_row, max_col = mr.min_row, mr.min_col, mr.max_row, mr.max_col
+            rowspan = max_row - min_row + 1
+            colspan = max_col - min_col + 1
+            merge_map[(min_row, min_col)] = (rowspan, colspan)
+            for r in range(min_row, max_row+1):
+                for c in range(min_col, max_col+1):
+                    if not (r == min_row and c == min_col):
+                        skip_cells.add((r, c))
+        # 统计所有行
+        all_rows = list(ws.iter_rows(values_only=True))
+        # 统计有效列（有内容或为合并单元格起始的列）
+        max_col = max((len(row) for row in all_rows), default=0)
+        valid_cols = set()
+        for i, row in enumerate(all_rows, 1):
+            for j in range(1, max_col+1):
+                # 有内容
+                if j <= len(row) and row[j-1] not in (None, ''):
+                    valid_cols.add(j)
+                # 是合并单元格起始
+                if (i, j) in merge_map:
+                    valid_cols.add(j)
+        valid_cols = sorted(valid_cols)
+        # 生成HTML表格，只渲染有效列
+        html = '<table>'
+        for i, row in enumerate(all_rows, 1):
+            html += '<tr>'
+            col_idx = 1
+            logical_col = 0
+            while col_idx <= max_col:
+                if col_idx not in valid_cols:
+                    col_idx += 1
+                    continue
+                if (i, col_idx) in skip_cells:
+                    col_idx += 1
+                    continue
+                val = ''
+                if col_idx <= len(row):
+                    cell = row[col_idx-1]
+                    val = '' if cell is None else str(cell)
+                attrs = ''
+                colspan = 1
+                if (i, col_idx) in merge_map:
+                    rowspan, colspan = merge_map[(i, col_idx)]
+                    if rowspan > 1:
+                        attrs += f' rowspan="{rowspan}"'
+                    if colspan > 1:
+                        attrs += f' colspan="{colspan}"'
+                tag = 'th' if i == 1 else 'td'
+                html += f'<{tag}{attrs}>{val}</{tag}>'
+                col_idx += colspan
+            html += '</tr>'
+        html += '</table>'
+        # 包装完整HTML，设置样式，table-layout:fixed
         html_full = f"""
         <html>
         <head>
         <meta charset='utf-8'>
         <style>
         body {{ background: #fff; margin: 0; padding: 0; }}
-        table {{ border-collapse: collapse; font-size: 16px; font-family: 'SimHei', 'Microsoft YaHei', Arial, sans-serif; }}
+        table {{ border-collapse: collapse; font-size: 16px; font-family: 'SimHei', 'Microsoft YaHei', Arial, sans-serif; table-layout: fixed; }}
         th, td {{ border: 1px solid #888; padding: 6px 12px; max-width: 400px; word-break: break-all; text-align: center; }}
         th {{ background: #f2f2f2; }}
         </style>
@@ -150,15 +201,13 @@ def excel_viewer():
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
                 page.goto(f'file://{html_path}')
-                # 等待表格渲染
                 page.wait_for_selector('table')
-                # 获取表格元素截图
                 element = page.query_selector('table')
                 img_bytes = element.screenshot(type='png')
                 img_io.write(img_bytes)
                 img_io.seek(0)
                 browser.close()
-            logger.info(f"Excel Sheet{sheet_index}渲染成功（playwright），图片已生成")
+            logger.info(f"Excel Sheet{sheet_index}渲染成功（playwright，合并单元格支持），图片已生成")
             return send_file(img_io, mimetype='image/png', as_attachment=False, download_name=f'sheet{sheet_index}.png')
         except Exception as e:
             logger.error(f"playwright渲染异常: {e}\n{traceback.format_exc()}")

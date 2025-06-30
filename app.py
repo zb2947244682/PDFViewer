@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, Response
 import requests
 import fitz  # PyMuPDF
 import io
@@ -6,7 +6,7 @@ from PIL import Image
 
 app = Flask(__name__)
 
-@app.route('/PDF')
+@app.route('/PDFViewer')
 def pdf_to_png():
     pdf_url = request.args.get('Url')
     if not pdf_url:
@@ -43,6 +43,22 @@ def pdf_to_png():
         return send_file(img_io, mimetype='image/png', as_attachment=False, download_name='page1.png')
     except Exception as e:
         return jsonify({'error': f'PDF处理异常: {str(e)}'}), 500
+
+@app.route('/GetPDFPageCount')
+def get_pdf_page_count():
+    pdf_url = request.args.get('Url')
+    if not pdf_url:
+        return Response('0', mimetype='text/plain')
+    try:
+        resp = requests.get(pdf_url, timeout=15)
+        if resp.status_code != 200:
+            return Response('0', mimetype='text/plain')
+        pdf_bytes = resp.content
+        pdf_doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        count = pdf_doc.page_count
+        return Response(str(count), mimetype='text/plain')
+    except Exception:
+        return Response('0', mimetype='text/plain')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True) 

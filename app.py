@@ -9,6 +9,11 @@ app = Flask(__name__)
 @app.route('/PDFViewer')
 def pdf_to_png():
     pdf_url = request.args.get('Url')
+    page_index = request.args.get('PageIndex', default='1')
+    try:
+        page_index = int(page_index)
+    except Exception:
+        return Response('无效的参数', mimetype='text/plain')
     if not pdf_url:
         return jsonify({'error': '缺少Url参数'}), 400
     try:
@@ -23,11 +28,12 @@ def pdf_to_png():
     try:
         # 用PyMuPDF打开PDF
         pdf_doc = fitz.open(stream=pdf_bytes, filetype='pdf')
-        if pdf_doc.page_count == 0:
-            return jsonify({'error': 'PDF无页面'}), 400
+        page_count = pdf_doc.page_count
+        if page_count == 0 or page_index < 1 or page_index > page_count:
+            return Response('无效的参数', mimetype='text/plain')
         zoom = 300 / 72  # 300DPI
         mat = fitz.Matrix(zoom, zoom)
-        page = pdf_doc[0]  # 只处理第一页
+        page = pdf_doc[page_index - 1]  # 页码从1开始
         pix = page.get_pixmap(matrix=mat, alpha=False)
         img = Image.open(io.BytesIO(pix.tobytes('png')))
         # 限制宽度为1920像素，高度等比缩放
@@ -40,9 +46,9 @@ def pdf_to_png():
         img_io = io.BytesIO()
         img.save(img_io, 'PNG')
         img_io.seek(0)
-        return send_file(img_io, mimetype='image/png', as_attachment=False, download_name='page1.png')
-    except Exception as e:
-        return jsonify({'error': f'PDF处理异常: {str(e)}'}), 500
+        return send_file(img_io, mimetype='image/png', as_attachment=False, download_name=f'page{page_index}.png')
+    except Exception:
+        return Response('无效的参数', mimetype='text/plain')
 
 @app.route('/GetPDFPageCount')
 def get_pdf_page_count():

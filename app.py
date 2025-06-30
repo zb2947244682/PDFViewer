@@ -9,6 +9,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import logging
 import traceback
+import tempfile
+from playwright.sync_api import sync_playwright
 
 # 日志配置
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -120,39 +122,46 @@ def excel_viewer():
         if df.empty:
             logger.error("Sheet内容为空")
             return Response('无效的参数', mimetype='text/plain')
-        # 设置matplotlib中文字体
-        import matplotlib.font_manager as fm
-        plt.rcParams['font.sans-serif'] = ['SimHei']
-        plt.rcParams['axes.unicode_minus'] = False
+        # DataFrame转HTML
+        html = df.to_html(index=False, border=1, justify='center')
+        # 包装完整HTML，设置样式
+        html_full = f"""
+        <html>
+        <head>
+        <meta charset='utf-8'>
+        <style>
+        body {{ background: #fff; margin: 0; padding: 0; }}
+        table {{ border-collapse: collapse; font-size: 16px; font-family: 'SimHei', 'Microsoft YaHei', Arial, sans-serif; }}
+        th, td {{ border: 1px solid #888; padding: 6px 12px; max-width: 400px; word-break: break-all; text-align: center; }}
+        th {{ background: #f2f2f2; }}
+        </style>
+        </head>
+        <body>{html}</body>
+        </html>
+        """
+        # 用playwright渲染HTML并截图
         try:
-            logger.info("开始渲染图片...")
-            row_count = df.shape[0]
-            col_count = df.shape[1]
-            fig_height = min(1 + 0.5 * (row_count + 1), 100)
-            fig_width = min(2 + 1.2 * col_count, 40)
-            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-            ax.axis('off')
-            tbl = ax.table(cellText=df.values, colLabels=df.columns, loc='upper left', cellLoc='center')
-            tbl.auto_set_font_size(False)
-            tbl.set_fontsize(12)
-            tbl.scale(1.2, 1.2)
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight', pad_inches=0.1, dpi=150)
-            plt.close(fig)
-            buf.seek(0)
-            img = Image.open(buf)
-            max_width = 1920
-            if img.width > max_width:
-                ratio = max_width / img.width
-                new_height = int(img.height * ratio)
-                img = img.resize((max_width, new_height), Image.LANCZOS)
+            logger.info("开始用playwright渲染HTML并截图...")
+            with tempfile.NamedTemporaryFile('w', delete=False, suffix='.html', encoding='utf-8') as f:
+                f.write(html_full)
+                html_path = f.name
             img_io = io.BytesIO()
-            img.save(img_io, 'PNG')
-            img_io.seek(0)
-            logger.info(f"Excel Sheet{sheet_index}渲染成功，图片尺寸: {img.width}x{img.height}")
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto(f'file://{html_path}')
+                # 等待表格渲染
+                page.wait_for_selector('table')
+                # 获取表格元素截图
+                element = page.query_selector('table')
+                img_bytes = element.screenshot(type='png')
+                img_io.write(img_bytes)
+                img_io.seek(0)
+                browser.close()
+            logger.info(f"Excel Sheet{sheet_index}渲染成功（playwright），图片已生成")
             return send_file(img_io, mimetype='image/png', as_attachment=False, download_name=f'sheet{sheet_index}.png')
         except Exception as e:
-            logger.error(f"Excel渲染异常: {e}\n{traceback.format_exc()}")
+            logger.error(f"playwright渲染异常: {e}\n{traceback.format_exc()}")
             return Response('无效的参数', mimetype='text/plain')
     except Exception as e:
         logger.error(f"Excel处理异常: {e}\n{traceback.format_exc()}")
